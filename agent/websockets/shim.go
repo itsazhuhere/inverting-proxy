@@ -52,16 +52,25 @@ const (
     if (typeof window.nativeWebSocket !== 'undefined') {
       // We have already replaced websockets
       return;
-		}
-		// Some version definitions
-		const TEXT = 0;
-		const BASE64 = 1;
-		const RAWBINARY = 2;
+    }
+    const TEXT = 0;
+    const BASE64 = 1;
+    const RAWBINARY = 2;
 
     console.log('Replacing native websockets with a shim');
     window.nativeWebSocket = window.WebSocket;
     const location = window.location;
     const shimUri = location.protocol + '//' + location.host + '/{{.ShimPath}}/';
+
+	// https://developers.google.com/web/updates/2012/06/How-to-convert-ArrayBuffer-to-and-from-String
+    function stringToArrayBuffer(str) {
+      var buf = new ArrayBuffer(str.length);
+      var bufView = new Uint8Array(buf);
+      for (var i=0, strLen=str.length; i<strLen; i++) {
+        bufView[i] = str.charCodeAt(i);
+      }
+      return buf;
+    }
 
     function shouldShimWebsockets(url) {
       var parsedURL = new URL(url);
@@ -103,10 +112,11 @@ const (
             if (Array.isArray(msg)) {
               if (self.protocolVersion != TEXT) {
                 for (var i = 0; i < msg.length; i++) {
-									msg[i] = atob(msg[i]);
-									if (self.protocolVersion === RAWBINARY) {
-										 msg[i] = str2ab(msg[i]);
-									}
+                  if (self.protocolVersion === RAWBINARY) {
+                    msg[i] = stringToArrayBuffer(msg[i]);
+                  } else {
+                    msg[i] == atob(msg[i]);
+                  }
                 }
               }
               msg = new Blob(msg);
@@ -171,18 +181,18 @@ const (
             var blob = new Blob([msgs[i].msg]);
             var reader = new FileReader();
             reader.addEventListener("loadend", function() {
-            if (self.protocolVersion != TEXT ) {
-							msgs[i].msg = [btoa(reader.result)];
+            if (self.protocolVersion === TEXT ) {
+              msgs[i].msg = [reader.result];
             } else {
-                msgs[i].msg = [reader.result];
+              msgs[i].msg = [btoa(reader.result)];
             }
             self.convertMessagesAndPush(msgs);
-						});
-						if (self.protocolVersion === RAWBINARY) {
-							reader.readAsBinaryString(blob);
-						} else {
-							reader.readAsText(blob);
-						}
+            });
+            if (self.protocolVersion === TEXT) {
+              reader.readAsText(blob);
+            } else {
+              reader.readAsBinaryString(blob);
+            }
             return;
           }
         }
@@ -258,6 +268,20 @@ const (
 				return;
 			}
     };
+
+    addEventListener: function(type, listener) {
+      if (type === 'message') this.onmessage = listener;
+      else if (type === 'open') this.onopen = listener;
+      else if (type === 'error') this.onerror = listener;
+      return;
+    },
+    removeEventListener: function(type, listener) {
+      if (type === 'message' && this.onmessage === listener) this.onmessage = null;
+      else if (type === 'open' && this.onopen === listener) this.onopen = null;
+      else if (type === 'error' && this.onerror === listener) this.onerror = null;
+      return;
+    }
+
     WebSocketShim.CONNECTING = 0;
     WebSocketShim.OPEN = 1;
     WebSocketShim.CLOSING = 2;
@@ -285,6 +309,7 @@ func (sb *shimmedBody) Close() error {
 	return sb.closer.Close()
 }
 
+// ShimBody handles websockets using shim template
 func ShimBody(shimPath string) (func(resp *http.Response) error, error) {
 	var templateBuf bytes.Buffer
 	if err := shimTmpl.Execute(&templateBuf, &struct{ ShimPath string }{ShimPath: shimPath}); err != nil {
