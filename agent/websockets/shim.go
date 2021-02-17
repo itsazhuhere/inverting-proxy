@@ -52,10 +52,15 @@ const (
     if (typeof window.nativeWebSocket !== 'undefined') {
       // We have already replaced websockets
       return;
-    }
+		}
+		// Some version definitions
+		const TEXT = 0;
+		const BASE64 = 1;
+		const RAWBINARY = 2;
+
     console.log('Replacing native websockets with a shim');
     window.nativeWebSocket = window.WebSocket;
-    const  location = window.location;
+    const location = window.location;
     const shimUri = location.protocol + '//' + location.host + '/{{.ShimPath}}/';
 
     function shouldShimWebsockets(url) {
@@ -64,13 +69,22 @@ const (
         parsedURL.host = location.host;
       }
       return (parsedURL.host == location.host);
-    }
+		}
+
+		function str2ab(str) {
+			var buf = new ArrayBuffer(str.length);
+			var bufView = new Uint8Array(buf);
+			for (var i = 0, strLen = str.length; i < strLen; i++) {
+				bufView[i] = str.charCodeAt(i);
+			}
+			return buf;
+		}
 
     function WebSocketShim(url, protocols) {
       if (!shouldShimWebsockets(url)) {
         console.log("Not shimming websockets for " + parsedURL.host + " as it does not match the location of " + location.host);
         return new window.nativeWebSocket(url, protocols);
-      }
+			}
 
       // We need to reference "this" within nested functions, so we alias it to "self"
       var self = this;
@@ -87,14 +101,16 @@ const (
         if (self.onmessage) {
           msgs.forEach(function(msg) {
             if (Array.isArray(msg)) {
-              if (self.protocolVersion != 0) {
+              if (self.protocolVersion != TEXT) {
                 for (var i = 0; i < msg.length; i++) {
-                    msg[i] == atob(msg[i]);
+									msg[i] = atob(msg[i]);
+									if (self.protocolVersion === RAWBINARY) {
+										 msg[i] = str2ab(msg[i]);
+									}
                 }
               }
-              
               msg = new Blob(msg);
-            }
+						}
             self.onmessage({ target: self, data: msg });
           });
         }
@@ -121,7 +137,7 @@ const (
           }
         };
         req.open("POST", shimUri + action, true);
-        req.setRequestHeader("X-Websocket-Shim-Version", "1");
+        req.setRequestHeader("X-Websocket-Shim-Version", "2");
         if (typeof msg !== 'string') {
           msg = JSON.stringify(msg);
         }
@@ -155,14 +171,18 @@ const (
             var blob = new Blob([msgs[i].msg]);
             var reader = new FileReader();
             reader.addEventListener("loadend", function() {
-            if (self.protocolVersion != 0 ) {
-                msgs[i].msg = [btoa(reader.result)];
+            if (self.protocolVersion != TEXT ) {
+							msgs[i].msg = [btoa(reader.result)];
             } else {
                 msgs[i].msg = [reader.result];
             }
             self.convertMessagesAndPush(msgs);
-            });
-            reader.readAsText(blob);
+						});
+						if (self.protocolVersion === RAWBINARY) {
+							reader.readAsBinaryString(blob);
+						} else {
+							reader.readAsText(blob);
+						}
             return;
           }
         }
@@ -194,14 +214,14 @@ const (
       self.xhr('open', url, function(resp) {
         respJSON = JSON.parse(resp);
         if (respJSON.v === undefined) {
-            self.protocolVersion = 0;
+            self.protocolVersion = TEXT;
         } else {
             self.protocolVersion = respJSON.v;
         }
         self._sessionID = respJSON.id;
         openedHandler(respJSON.msg);
         poll();
-      });
+			});
     }
     WebSocketShim.prototype = {
       binaryType: "blob",
@@ -223,7 +243,20 @@ const (
         }
         this.readyState = WebSocketShim.CLOSING;
         this.xhr('close', {'id': this._sessionID}, false, this.closedHandler);
-      },
+			},
+			
+			addEventListener: function(type, listener) {
+				if (type === 'message') this.onmessage = listener;
+				else if (type === 'open') this.onopen = listener;
+				else if (type === 'error') this.onerror = listener;
+				return;
+			},
+			removeEventListener: function(type, listener) {
+				if (type === 'message' && this.onmessage === listener) this.onmessage = null;
+				else if (type === 'open' && this.onopen === listener) this.onopen = null;
+				else if (type === 'error' && this.onerror === listener) this.onerror = null;
+				return;
+			}
     };
     WebSocketShim.CONNECTING = 0;
     WebSocketShim.OPEN = 1;
